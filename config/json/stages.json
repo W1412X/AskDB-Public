@@ -1,0 +1,95 @@
+{
+  "query_workflow": {
+    "model_name": "qwen3-max",
+    "max_parallel_intents": 4,
+    "max_steps": 50,
+    "max_json_retries": 2,
+    "max_semantic_retries": 1,
+    "max_schemalink_rounds": 32,
+    "max_repair_attempts_per_intent": 16,
+    "max_ask_turns_per_ticket": 3,
+    "max_rows": 100,
+    "sql_timeout_ms": 30000,
+    "max_decompose_self_repair": 3,
+    "agent_runner_tool_round_cap": 8
+  },
+  "initialize": {
+    "agent": {
+      "model_name": "qwen3-max"
+    },
+    "embedding": {
+      "model_name": "BAAI/bge-large-zh-v1.5",
+      "model_path_name": "bge-large-zh-v1.5",
+      "normalize_embeddings": true,
+      "batch_size": 32,
+      "device": "",
+      "overwrite": false,
+      "hf_endpoint": "https://hf-mirror.com",
+      "max_length": 512,
+      "trust_remote_code": false
+    }
+  },
+  "general": {
+    "summary": {
+      "model_name": "qwen-flash",
+      "max_input_length": 10000
+    }
+  },
+  "column_agent": {
+    "sampling": {
+      "random_sample_max": 10,
+      "distinct_sample_max": 20,
+      "truncate_length_max": 1024,
+      "pattern_analysis_sample_size": 100,
+      "table_context_sample_size": 5
+    },
+    "workflow_sampling": {
+      "random_sample_n": 8,
+      "distinct_sample_n": 12,
+      "table_context_n": 5,
+      "table_context_extra_cols": 5,
+      "truncate_length": 200,
+      "max_rows_for_distinct_count": 200000
+    },
+    "token": {
+      "max_tokens_per_field": {
+        "sample_value": 200,
+        "comment": 500,
+        "semantic_summary": 1000
+      },
+      "max_total_tokens": 8000
+    },
+    "retry": {
+      "max_retries": 3,
+      "retry_backoff_factor": 2,
+      "retry_timeout": 30
+    },
+    "parallel": {
+      "max_parallel_columns": 5
+    }
+  },
+  "schema_tool_agent": {
+    "max_tool_calls_per_round": 3,
+    "max_tool_rounds": 16
+  },
+  "schema_gate": {
+    "llm_cache_max_entries": 16
+  },
+  "join_path_search": {
+    "max_depth_hard_cap": 5,
+    "min_edge_score": 0.18,
+    "min_path_score": 0.18,
+    "max_frontier_size": 200,
+    "max_anchors_per_table": 6,
+    "max_columns_per_database": 80,
+    "min_improvement": 0.03,
+    "no_improve_layers": 2
+  },
+  "workflow_store": {
+    "max_items": 200
+  },
+  "sql_explorer": {
+    "default_limit": 100,
+    "default_timeout_ms": 30000
+  }
+}

@@ -1,0 +1,26 @@
+# 数据库（MySQL 8 使用 caching_sha2_password 时需 cryptography）
+pymysql
+DBUtils
+cryptography
+
+# LangChain 与 LLM
+langchain>=1.2.0
+langchain-openai>=1.1.0
+langchain-qwq
+langchain-deepseek
+pydantic>=2.0
+
+# 向量与嵌入
+sentence-transformers
+numpy
+
+# 工具
+python-dotenv
+sqlparse
+
+# Web API（运行 uvicorn api.main:app 时需要，见 README_WEB.md）
+fastapi
+uvicorn[standard]
+
+# 测试/数据生成（tests/db_generation）
+Faker
