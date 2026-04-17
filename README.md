@@ -88,12 +88,12 @@ AskDB 不依赖「单次 text-to-SQL」，而是用**分层约束 + 可执行校
 
 ### 1. 工作流层：拆分与拓扑必须「可执行」
 
-- **意图拆分校验**：`QueryWorkflowPipeline` 在 `_run_from_decompose` 中先跑 `IntentDecomposerAgent`，再用 `IntentDecomposeValidatorAgent` 对照**原始问题**检查拆分是否独立、query/schema 是否一一对应、是否强耦合不可独立求解；不通过则带 `issues` / `suggested_fix` 触发**有限次自修复重试**（`max_decompose_self_repair`），仍失败则走 **ask_user** 澄清票，而不是硬跑错误 DAG。
-- **拓扑合法性**：拆分通过后由 `IntentTopologyBuilder` 构建 DAG；构建失败同样发澄清票，避免依赖不清的执行顺序。
+- **意图拆分校验**：`QueryWorkflowPipeline` 在 `_run_from_decompose` 中先跑 `IntentDecomposerAgent`，再用 `IntentDecomposeValidatorAgent` 对照**原始问题**检查拆分是否独立、query/schema 是否一一对应、是否强耦合不可独立求解；不通过则带 `issues` / `suggested_fix` 触发**有限次自修复重试**（`max_decompose_self_repair`），仍失败则走 **ask_user** 澄清，而不是硬跑错误 DAG。
+- **拓扑合法性**：拆分通过后由 `IntentTopologyBuilder` 构建 DAG；构建失败同样发AskUser请求，避免依赖不清的执行顺序。
 
 ### 2. SchemaLink：结构校验 → 确定性缺口 → LLM 充分性
 
-- **SchemaGate**（`schemalink/schema_gate.py`）在宣告 SchemaLink 成功前依次：**结构校验**（`SchemaValidator` + `database_scope`）、**确定性充分性**（`deterministic_sufficiency`，能规则判定的缺口直接挡下）、再必要时 **LLM 充分性**（`SchemaSufficiencyValidator`）；LLM 结果带 LRU 缓存，减少抖动。
+- **SchemaGate**（`schemalink/schema_gate.py`）在宣告 SchemaLink 成功前依次：**结构校验**（`SchemaValidator` + `database_scope`）、**确定性充分性**（`deterministic_sufficiency`，schema自洽自回归）、再必要时 **LLM 充分性**（`SchemaSufficiencyValidator`）；LLM 结果带 LRU 缓存，减少抖动。
 - **信息不足则停**：SchemaLink 可走 `WAIT_USER`，把缺口交给用户补充后再 `resume`，避免在缺表缺列时瞎生成 SQL。
 
 ### 3. 关系代数层：对齐 schema + 可失败
@@ -113,7 +113,7 @@ AskDB 不依赖「单次 text-to-SQL」，而是用**分层约束 + 可执行校
 
 ### 5. 语义层：SQL 是否「答非所问」
 
-在通过上述校验后，`IntentExecutor` 还会调用 **`SQLValidationAgent`**（`agents/sql_validation_agent.py`）：把 **intent、结构化 RA、候选 SQL、schema、方言**一并交给模型做 **ok/fail** 语义判决（多写了条件、漏条件、口径与 RA 不一致等均判 fail）。`fail` 会写入 **`sql_validation_feedback`** 并触发 **`RepairAction.REPLAN_RA`**，清空 RA/SQL 相关状态回到规划阶段，在 **`max_repair_attempts`** 内循环修复。
+在通过上述校验后，`IntentExecutor` 还会调用 **`SQLValidationAgent`**（`agents/sql_validation_agent.py`）：把 **intent、结构化 RA、候选 SQL、schema**一并交给模型做 **ok/fail** 语义判决（多写了条件、漏条件、口径与 RA 不一致等均判 fail）。`fail` 会写入 **`sql_validation_feedback`** 并触发 **`RepairAction.REPLAN_RA`**，清空 RA/SQL 相关状态回到规划阶段，在 **`max_repair_attempts`** 内循环修复。
 
 ### 6. 执行与解释：只读、限量、不编造结果
 
@@ -130,6 +130,11 @@ AskDB 不依赖「单次 text-to-SQL」，而是用**分层约束 + 可执行校
 
 - **LLM 阶段**（拆分评估、充分性、RA、渲染、语义校验、解释、汇总）在提示与 JSON 契约上尽量收紧，但**不能保证 100% 正确**；**EXPLAIN、只读执行、schema/post_validate、确定性校验**提供的是「可证伪」护栏。
 - **语义校验**本身是模型判断，与 RA/SQL 校验互为补充；若业务极关键，应把本系统输出视为**辅助**，关键 SQL 仍需人工或离线测试集复核。
+
+## 不足
+### 一些其他工具需要不足
+- 测试发现，系统在较复杂的SQL生成或者查询需求时表现稳定，但是在一些简单需求，涉及复杂的字符串正则匹配等这种任务时，表现反而不好
+- 后续需要引入专门的此类子系统如正则表达式生成Agent或者正则表达确定性规则库
 
 ## 环境要求
 
