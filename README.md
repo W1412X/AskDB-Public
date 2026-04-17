@@ -82,6 +82,55 @@ flowchart TB
 - **澄清对话**：工作流级 ask 队列与 ticket，CLI 或 API 均可 resume。
 - **初始化**：列描述 JSON + 列向量，供查询阶段语义检索使用。
 
+## 准确性如何保证（设计与实现）
+
+AskDB 不依赖「单次 text-to-SQL」，而是用**分层约束 + 可执行校验 + 失败修复/澄清**把错误暴露在执行前或执行后解释阶段。下面按代码中的真实路径说明（对应 `stages/query_workflow/`）。
+
+### 1. 工作流层：拆分与拓扑必须「可执行」
+
+- **意图拆分校验**：`QueryWorkflowPipeline` 在 `_run_from_decompose` 中先跑 `IntentDecomposerAgent`，再用 `IntentDecomposeValidatorAgent` 对照**原始问题**检查拆分是否独立、query/schema 是否一一对应、是否强耦合不可独立求解；不通过则带 `issues` / `suggested_fix` 触发**有限次自修复重试**（`max_decompose_self_repair`），仍失败则走 **ask_user** 澄清票，而不是硬跑错误 DAG。
+- **拓扑合法性**：拆分通过后由 `IntentTopologyBuilder` 构建 DAG；构建失败同样发澄清票，避免依赖不清的执行顺序。
+
+### 2. SchemaLink：结构校验 → 确定性缺口 → LLM 充分性
+
+- **SchemaGate**（`schemalink/schema_gate.py`）在宣告 SchemaLink 成功前依次：**结构校验**（`SchemaValidator` + `database_scope`）、**确定性充分性**（`deterministic_sufficiency`，能规则判定的缺口直接挡下）、再必要时 **LLM 充分性**（`SchemaSufficiencyValidator`）；LLM 结果带 LRU 缓存，减少抖动。
+- **信息不足则停**：SchemaLink 可走 `WAIT_USER`，把缺口交给用户补充后再 `resume`，避免在缺表缺列时瞎生成 SQL。
+
+### 3. 关系代数层：对齐 schema + 可失败
+
+- **提示约束**：`RAPlannerAgent` 要求只用 `resolved_schema` 中对象、不编造 join/过滤/聚合口径，并消费上一轮 **`sql_validation_feedback`** 纠偏。
+- **程序后验**：`RAPlannerAgent.post_validate` 用 `resolved_schema` 校验 RA 中 **entity 表、列、join 键**均在允许集合内；`plan_kind == "set"` 时强制至少两条 `set_branches`。不通过直接抛错，进入错误路由而非静默继续。
+
+### 4. SQL 层：语法/安全/可解析 + 数据库 EXPLAIN + 输出列对齐
+
+`SQLValidator`（`execution/sql_validator.py`）对每个候选 SQL：
+
+- 用 **sqlparse** 限制为**单条**、仅 **SELECT / WITH**、扫描 token 拒绝常见 **DML/DDL** 关键字；
+- 在只读连接上对 **`EXPLAIN` + SQL** 做**真机校验**（语法与对象在引擎侧是否成立）；
+- 若渲染结果带了 **`expected_columns`**，则从 SELECT 列表做**列血缘/别名**提取（含 `*` 的宽松处理），缺列则该候选失败；多个候选时取**第一个全通过**的索引。
+
+这是**确定性**闸门，与模型无关。
+
+### 5. 语义层：SQL 是否「答非所问」
+
+在通过上述校验后，`IntentExecutor` 还会调用 **`SQLValidationAgent`**（`agents/sql_validation_agent.py`）：把 **intent、结构化 RA、候选 SQL、schema、方言**一并交给模型做 **ok/fail** 语义判决（多写了条件、漏条件、口径与 RA 不一致等均判 fail）。`fail` 会写入 **`sql_validation_feedback`** 并触发 **`RepairAction.REPLAN_RA`**，清空 RA/SQL 相关状态回到规划阶段，在 **`max_repair_attempts`** 内循环修复。
+
+### 6. 执行与解释：只读、限量、不编造结果
+
+- **执行**：`SQLExecutor` 使用 `readonly=True` 的查询接口，并受 **`sql_timeout_ms`** 与 **`max_rows`** 限制；超行会标记 `truncated`。
+- **单意图解释**：`ResultInterpreterAgent` 规则要求**只解释 `execution_result` 中真实数据**，输出 **`confidence` / `assumptions` / `missing_information`**，空结果或不确定须明确说明。
+- **最终汇总**：`FinalSynthesizerAgent` 约束为**只汇总各 intent 已有结论**，不重新推导 SQL、不编造未完成意图的答案；若汇总模型失败，`ResultSynthesizer` **回退为拼接已完成 intent 的 answer**，避免静默胡编。
+
+### 7. 其他运行时护栏
+
+- **错误归因与修复**：`ErrorRouter` 将异常映射为 `RepairAction`（如重建 schema、重渲染 SQL、重执行等），由 `IntentExecutor._apply_repair` 回到对应阶段。
+- **步数上限**：`WorkflowStepLimiter` 限制工作流步骤追加，防止无限重试（超限会报 `WORKFLOW_STEP_LIMIT_EXCEEDED`）。
+
+### 需要了解的边界
+
+- **LLM 阶段**（拆分评估、充分性、RA、渲染、语义校验、解释、汇总）在提示与 JSON 契约上尽量收紧，但**不能保证 100% 正确**；**EXPLAIN、只读执行、schema/post_validate、确定性校验**提供的是「可证伪」护栏。
+- **语义校验**本身是模型判断，与 RA/SQL 校验互为补充；若业务极关键，应把本系统输出视为**辅助**，关键 SQL 仍需人工或离线测试集复核。
+
 ## 环境要求
 
 - Python 3.10+
